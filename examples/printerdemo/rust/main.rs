@@ -1,19 +1,23 @@
 // Copyright © SixtyFPS GmbH <info@sixtyfps.io>
 // SPDX-License-Identifier: (GPL-3.0-only OR LicenseRef-SixtyFPS-commercial)
 
+#![no_std]
+
+extern crate alloc;
+
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+use alloc::rc::Rc;
 use sixtyfps::Model;
-use std::rc::Rc;
 
 sixtyfps::include_modules!();
 
 /// Returns the current time formated as a string
 fn current_time() -> sixtyfps::SharedString {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "chrono")]
     return chrono::Local::now().format("%H:%M:%S %d/%m/%Y").to_string().into();
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "chrono"))]
     return "".into();
 }
 
@@ -66,7 +70,7 @@ pub fn main() {
 
     main_window.on_quit(move || {
         #[cfg(not(target_arch = "wasm32"))]
-        std::process::exit(0);
+        sixtyfps::quit_event_loop();
     });
 
     let printer_queue_copy = printer_queue.clone();
@@ -82,7 +86,7 @@ pub fn main() {
     let printer_queue_weak = Rc::downgrade(&printer_queue);
     printer_queue.print_progress_timer.start(
         sixtyfps::TimerMode::Repeated,
-        std::time::Duration::from_secs(1),
+        core::time::Duration::from_secs(1),
         move || {
             if let Some(printer_queue) = printer_queue_weak.upgrade() {
                 if printer_queue.data.row_count() > 0 {
