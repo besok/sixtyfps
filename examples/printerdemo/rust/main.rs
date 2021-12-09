@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: (GPL-3.0-only OR LicenseRef-SixtyFPS-commercial)
 
 #![no_std]
-#![cfg_attr(
-    all(feature = "sixtyfps-rendering-backend-mcu", not(feature = "mcu-simulator")),
-    no_main
-)]
+#![cfg_attr(feature = "mcu-pico-st7789", no_main)]
 
 extern crate alloc;
 
@@ -46,31 +43,34 @@ impl PrinterQueueData {
     }
 }
 
-#[cfg(any(not(feature = "sixtyfps-rendering-backend-mcu"), feature = "mcu-simulator"))]
+#[cfg(not(feature = "mcu-pico-st7789"))]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
 pub fn main() {
-    printerdemo_main();
-}
-
-#[cfg(all(feature = "sixtyfps-rendering-backend-mcu", not(feature = "mcu-simulator")))]
-#[sixtyfps_rendering_backend_mcu::entry]
-fn main() -> ! {
-    printerdemo_main();
-    loop {}
-}
-
-fn printerdemo_main() {
-    #[cfg(feature = "mcu-simulator")]
-    sixtyfps_rendering_backend_mcu::init_simulator();
-
-    #[cfg(feature = "mcu-pico-st7789")]
-    sixtyfps_rendering_backend_mcu::init_board();
+    #[cfg(feature = "sixtyfps-rendering-backend-mcu")]
+    {
+        #[cfg(feature = "mcu-simulator")]
+        sixtyfps_rendering_backend_mcu::init_simulator();
+        #[cfg(not(feature = "mcu-simulator"))]
+        sixtyfps_rendering_backend_mcu::init_with_mock_display();
+    }
 
     // This provides better error messages in debug mode.
     // It's disabled in release mode so it doesn't bloat up the file size.
     #[cfg(all(debug_assertions, target_arch = "wasm32"))]
     console_error_panic_hook::set_once();
 
+    printerdemo_main();
+}
+
+#[cfg(feature = "mcu-pico-st7789")]
+#[sixtyfps_rendering_backend_mcu::entry]
+fn main() -> ! {
+    sixtyfps_rendering_backend_mcu::init_board();
+    printerdemo_main();
+    loop {}
+}
+
+fn printerdemo_main() {
     let main_window = MainWindow::new();
     main_window.set_ink_levels(sixtyfps::VecModel::from_slice(&[
         InkLevel { color: sixtyfps::Color::from_rgb_u8(0, 255, 255), level: 0.40 },
