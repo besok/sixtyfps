@@ -244,7 +244,9 @@ pub use sixtyfps_corelib::timers::{Timer, TimerMode};
 #[doc(hidden)]
 #[cfg(feature = "std")]
 pub fn register_font_from_memory(data: &'static [u8]) -> Result<(), Box<dyn std::error::Error>> {
-    sixtyfps_rendering_backend_default::backend().register_font_from_memory(data)
+    #[cfg(feature = "std")]
+    sixtyfps_rendering_backend_default::backend().register_font_from_memory(data)?;
+    Ok(())
 }
 
 /// This function can be used to register a custom TrueType font with SixtyFPS,
@@ -255,7 +257,9 @@ pub fn register_font_from_memory(data: &'static [u8]) -> Result<(), Box<dyn std:
 pub fn register_font_from_path<P: AsRef<std::path::Path>>(
     path: P,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    sixtyfps_rendering_backend_default::backend().register_font_from_path(path.as_ref())
+    #[cfg(feature = "std")]
+    sixtyfps_rendering_backend_default::backend().register_font_from_path(path.as_ref())?;
+    Ok(())
 }
 
 /// internal re_exports used by the macro generated
