@@ -1072,6 +1072,13 @@ pub fn convert_path(path: &ExprPath, local_context: &mut EvalLocalContext) -> Pa
                 .collect::<SharedVector<PathElement>>(),
         ),
         ExprPath::Events(events) => convert_from_lyon_path(events.iter()),
+        ExprPath::Commands(commands) => {
+            if let Value::String(commands) = eval_expression(commands, local_context) {
+                PathData::Commands(commands)
+            } else {
+                panic!("binding to path commands does not evalutate to string");
+            }
+        }
     }
 }
 

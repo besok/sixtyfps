@@ -2763,6 +2763,9 @@ fn compile_path(path: &crate::expression_tree::Path, component: &Rc<Component>) 
                 converted_coordinates.join(",")
             )
         }
+        crate::expression_tree::Path::Commands(commands_expr) => {
+            compile_expression(commands_expr, component)
+        }
     }
 }
 

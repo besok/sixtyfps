@@ -2517,6 +2517,10 @@ fn compile_path(path: &Path, component: &Rc<Component>) -> TokenStream {
             let events = compile_path_events(events);
             quote!(sixtyfps::re_exports::PathData::Events(#events))
         }
+        Path::Commands(commands) => {
+            let commands_expr = compile_expression(commands, component);
+            quote!(sixtyfps::re_exports::PathData::Commands(#commands_expr))
+        }
     }
 }
 

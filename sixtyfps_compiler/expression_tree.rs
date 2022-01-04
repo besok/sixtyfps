@@ -803,15 +803,13 @@ impl Expression {
             Expression::UnaryOp { sub, .. } => sub.is_constant(),
             Expression::Array { values, .. } => values.iter().all(Expression::is_constant),
             Expression::Struct { values, .. } => values.iter().all(|(_, v)| v.is_constant()),
-            Expression::PathElements { elements } => {
-                if let Path::Elements(elements) = elements {
-                    elements
-                        .iter()
-                        .all(|element| element.bindings.values().all(|v| v.borrow().is_constant()))
-                } else {
-                    true
-                }
-            }
+            Expression::PathElements { elements } => match elements {
+                Path::Elements(elements) => elements
+                    .iter()
+                    .all(|element| element.bindings.values().all(|v| v.borrow().is_constant())),
+                Path::Commands(_) => false,
+                Path::Events(_) => true,
+            },
             Expression::StoreLocalVariable { .. } => false,
             // we should somehow find out if this is constant or not
             Expression::ReadLocalVariable { .. } => false,
@@ -1175,6 +1173,7 @@ pub type PathEvents = Vec<PathEvent>;
 pub enum Path {
     Elements(Vec<PathElement>),
     Events(PathEvents),
+    Commands(Box<Expression>), // expr must evaluate to string
 }
 
 #[derive(Debug, Clone)]

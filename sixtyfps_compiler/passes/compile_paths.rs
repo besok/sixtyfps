@@ -45,7 +45,7 @@ pub fn compile_paths(
 
         let mut elem = elem_.borrow_mut();
 
-        let path_data = if let Some(commands_expr) =
+        let path_data_binding = if let Some(commands_expr) =
             elem.bindings.remove("commands").map(RefCell::into_inner)
         {
             if let Some(path_child) = elem.children.iter().find(|child| {
@@ -60,23 +60,23 @@ pub fn compile_paths(
                 return;
             }
 
-            let commands = match &commands_expr.expression {
-                Expression::StringLiteral(commands) => commands,
-                _ => {
-                    diag.push_error(
-                        "The commands property only accepts string literals".into(),
-                        &*elem,
-                    );
-                    return;
+            match &commands_expr.expression {
+                Expression::StringLiteral(commands) => {
+                    if let Some(binding) = compile_path_from_string_literal(commands) {
+                        binding
+                    } else {
+                        diag.push_error("Error parsing SVG commands".into(), &commands_expr);
+                        return;
+                    }
                 }
-            };
-
-            let path_builder = lyon_path::Path::builder().with_svg();
-            let path = lyon_svg::path_utils::build_path(path_builder, commands);
-            match path {
-                Ok(path) => Path::Events(path.into_iter().collect()),
-                Err(_) => {
-                    diag.push_error("Error parsing SVG commands".into(), &commands_expr);
+                expr @ _ if expr.ty() == Type::String => Expression::PathElements {
+                    elements: crate::expression_tree::Path::Commands(Box::new(
+                        commands_expr.expression,
+                    )),
+                }
+                .into(),
+                _ => {
+                    diag.push_error("The commands property only accepts strings".into(), &*elem);
                     return;
                 }
             }
@@ -104,12 +104,17 @@ pub fn compile_paths(
                     elem.children.push(child);
                 }
             }
-            crate::expression_tree::Path::Elements(path_data)
+            Expression::PathElements { elements: crate::expression_tree::Path::Elements(path_data) }
+                .into()
         };
 
-        elem.bindings.insert(
-            "elements".into(),
-            RefCell::new(Expression::PathElements { elements: path_data }.into()),
-        );
+        elem.bindings.insert("elements".into(), RefCell::new(path_data_binding));
     });
+}
+
+fn compile_path_from_string_literal(commands: &str) -> Option<BindingExpression> {
+    let path_builder = lyon_path::Path::builder().with_svg();
+    lyon_svg::path_utils::build_path(path_builder, commands).ok().map(|path| {
+        Expression::PathElements { elements: Path::Events(path.into_iter().collect()) }.into()
+    })
 }
