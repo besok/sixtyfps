@@ -561,8 +561,8 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                 .map(|(k, v)| (k.clone(), eval_expression(v, local_context)))
                 .collect(),
         ),
-        Expression::PathElements { elements } => {
-            Value::PathElements(convert_path(elements, local_context))
+        Expression::PathData(data)  => {
+            Value::PathData(convert_path(data, local_context))
         }
         Expression::StoreLocalVariable { name, value } => {
             let value = eval_expression(value, local_context);
@@ -831,7 +831,8 @@ fn check_value_type(value: &Value, ty: &Type) -> bool {
         | Type::Native(_)
         | Type::Callback { .. }
         | Type::Function { .. }
-        | Type::ElementReference => panic!("not valid property type"),
+        | Type::ElementReference
+        | Type::PathElement => panic!("not valid property type"),
         Type::Float32 => matches!(value, Value::Number(_)),
         Type::Int32 => matches!(value, Value::Number(_)),
         Type::String => matches!(value, Value::String(_)),
@@ -847,7 +848,7 @@ fn check_value_type(value: &Value, ty: &Type) -> bool {
         Type::Model => {
             matches!(value, Value::Model(_) | Value::Bool(_) | Value::Number(_) | Value::Array(_))
         }
-        Type::PathElements => matches!(value, Value::PathElements(_)),
+        Type::PathData => matches!(value, Value::PathData(_)),
         Type::Easing => matches!(value, Value::EasingCurve(_)),
         Type::Brush => matches!(value, Value::Brush(_)),
         Type::Array(inner) => {
@@ -1138,7 +1139,7 @@ pub fn default_value_for_type(ty: &Type) -> Value {
         Type::Void | Type::Invalid => Value::Void,
         Type::Model => Value::Void,
         Type::UnitProduct(_) => Value::Number(0.),
-        Type::PathElements => Value::PathElements(Default::default()),
+        Type::PathData => Value::PathData(Default::default()),
         Type::LayoutCache => Value::LayoutCache(Default::default()),
         Type::InferredProperty
         | Type::InferredCallback
@@ -1146,7 +1147,8 @@ pub fn default_value_for_type(ty: &Type) -> Value {
         | Type::Builtin(_)
         | Type::Component(_)
         | Type::Native(_)
-        | Type::Function { .. } => {
+        | Type::Function { .. }
+        | Type::PathElement => {
             panic!("There can't be such property")
         }
     }

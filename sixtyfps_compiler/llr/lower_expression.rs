@@ -166,7 +166,7 @@ pub fn lower_expression(
                 .map(|(s, e)| Some((s.clone(), lower_expression(e, ctx)?)))
                 .collect::<Option<_>>()?,
         }),
-        tree_Expression::PathElements { elements } => compile_path(elements, ctx),
+        tree_Expression::PathData(data) => compile_path(data, ctx),
         tree_Expression::EasingCurve(x) => Some(llr_Expression::EasingCurve(x.clone())),
         tree_Expression::LinearGradient { angle, stops } => Some(llr_Expression::LinearGradient {
             angle: Box::new(lower_expression(angle, ctx)?),
@@ -856,29 +856,33 @@ fn compile_path(
                         node: None,
                     };
 
-                    llr_Expression::Struct {
-                        ty,
-                        values: element
-                            .bindings
-                            .iter()
-                            .map(|(property, expr)| {
-                                (
-                                    property.clone(),
-                                    lower_expression(&expr.borrow().expression, ctx).unwrap(),
-                                )
-                            })
-                            .collect(),
+                    llr_Expression::Cast {
+                        from: llr_Expression::Struct {
+                            ty,
+                            values: element
+                                .bindings
+                                .iter()
+                                .map(|(property, expr)| {
+                                    (
+                                        property.clone(),
+                                        lower_expression(&expr.borrow().expression, ctx).unwrap(),
+                                    )
+                                })
+                                .collect(),
+                        }
+                        .into(),
+                        to: Type::PathElement,
                     }
                 })
                 .collect();
             Some(llr_Expression::Cast {
                 from: llr_Expression::Array {
-                    element_ty: Type::PathElements,
+                    element_ty: Type::PathElement,
                     values: converted_elements,
                     as_model: false,
                 }
                 .into(),
-                to: Type::PathElements,
+                to: Type::PathData,
             })
         }
         crate::expression_tree::Path::Events(events) => {

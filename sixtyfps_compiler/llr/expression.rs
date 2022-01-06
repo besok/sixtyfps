@@ -190,7 +190,8 @@ impl Expression {
             },
             Type::Bool => Expression::BoolLiteral(false),
             Type::Model => return None,
-            Type::PathElements => Expression::PathEvents(Default::default()),
+            Type::PathData => Expression::PathEvents(Default::default()),
+            Type::PathElement => return None,
             Type::Array(element_ty) => Expression::Array {
                 element_ty: (**element_ty).clone(),
                 values: vec![],
