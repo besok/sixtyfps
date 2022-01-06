@@ -129,7 +129,7 @@ pub fn generate(doc: &Document, _diag: &mut BuildDiagnostics) -> Option<TokenStr
 
     let globals =
         llr.globals.iter().filter(|glob| !glob.is_builtin).map(|glob| generate_global(glob, &llr));
-    let globals_ids = llr.globals.iter().filter(|glob| !glob.is_builtin).flat_map(|glob| {
+    let globals_ids = llr.globals.iter().filter(|glob| glob.exported).flat_map(|glob| {
         std::iter::once(ident(&glob.name)).chain(glob.aliases.iter().map(|x| ident(x)))
     });
 
@@ -402,7 +402,7 @@ fn public_api(
             property_and_callback_accessors.push(quote!(
                 #[allow(dead_code)]
                 pub fn #caller_ident(&self, #(#args_name : #callback_args,)*) -> #return_type {
-                    let _self = #self_init
+                    let _self = #self_init;
                     #prop.call(&(#(#args_name,)*))
                 }
             ));
@@ -411,7 +411,7 @@ fn public_api(
             property_and_callback_accessors.push(quote!(
                 #[allow(dead_code)]
                 pub fn #on_ident(&self, mut f: impl FnMut(#(#callback_args),*) -> #return_type + 'static) {
-                    let _self = #self_init
+                    let _self = #self_init;
                     #[allow(unused)]
                     #prop.set_handler(
                         // FIXME: why do i need to clone here?
@@ -430,18 +430,18 @@ fn public_api(
                 pub fn #getter_ident(&self) -> #rust_property_type {
                     #[allow(unused_imports)]
                     use sixtyfps::re_exports::*;
-                    let _self = #self_init
+                    let _self = #self_init;
                     #prop.get()
                 }
             ));
 
-            let set_value = property_set_value_tokens(r, prop, ctx);
+            let set_value = property_set_value_tokens(r, quote!(value), ctx);
             property_and_callback_accessors.push(quote!(
                 #[allow(dead_code)]
                 pub fn #setter_ident(&self, value: #rust_property_type) {
                     #[allow(unused_imports)]
                     use sixtyfps::re_exports::*;
-                    let _self = #self_init
+                    let _self = #self_init;
                     #set_value
                 }
             ));
@@ -1277,6 +1277,7 @@ fn access_item_rc(pr: &llr::PropertyReference, ctx: &EvaluationContext) -> Token
 #[derive(Clone, Copy)]
 struct ParentCtx<'a> {
     ctx: &'a EvaluationContext<'a>,
+    // Index of the repeater within the ctx.current_sub_component
     repeater_index: Option<usize>,
 }
 
@@ -1482,7 +1483,6 @@ fn compile_expression(expr: &Expression, ctx: &EvaluationContext) -> TokenStream
                 path = quote!(#path.parent.upgrade().unwrap());
             }
             let repeater_index = repeater_index.unwrap();
-            let repeater_id = format_ident!("repeater{}", repeater_index);
             let mut index_prop = llr::PropertyReference::Local {
                 sub_component_path: vec![],
                 property_index: ctx2.current_sub_component.unwrap().repeated[repeater_index]
@@ -1494,7 +1494,11 @@ fn compile_expression(expr: &Expression, ctx: &EvaluationContext) -> TokenStream
                     llr::PropertyReference::InParent { level, parent_reference: index_prop.into() };
             }
             let index_access = access_member(&index_prop, ctx);
-            quote!(#path.#repeater_id.model_set_row_data(#index_access.get(), #value as _))
+            let repeater = access_component_field_offset(
+                &inner_component_id(ctx2.current_sub_component.unwrap()),
+                &format_ident!("repeater{}", repeater_index),
+            );
+            quote!(#repeater.apply_pin(#path.as_pin_ref()).model_set_row_data(#index_access.get() as _, #value as _))
         }
         Expression::BinaryExpression { lhs, rhs, op } => {
             let (conv1, conv2) = match crate::expression_tree::operator_class(*op) {
@@ -1611,8 +1615,18 @@ fn compile_expression(expr: &Expression, ctx: &EvaluationContext) -> TokenStream
                     let keys = fields.keys().map(|k| ident(k));
                     quote!(#name { #(#keys: #elem as _,)* })
                 } else {
+                    let as_ = fields.values().map(|t| {
+                        if t.as_unit_product().is_some() {
+                            // number needs to be converted to the right things because intermediate
+                            // result might be f64 and that's usually not what the type of the tuple is in the end
+                            let t = rust_type(t).unwrap();
+                            quote!(as #t)
+                        } else {
+                            quote!()
+                        }
+                    });
                     // This will produce a tuple
-                    quote!((#(#elem,)*))
+                    quote!((#(#elem #as_,)*))
                 }
             } else {
                 panic!("Expression::Struct is not a Type::Struct")
