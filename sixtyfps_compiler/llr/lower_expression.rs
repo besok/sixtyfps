@@ -856,28 +856,28 @@ fn compile_path(
                         node: None,
                     };
 
-                    llr_Expression::Cast {
-                        from: llr_Expression::Struct {
-                            ty,
-                            values: element
-                                .bindings
-                                .iter()
-                                .map(|(property, expr)| {
-                                    (
-                                        property.clone(),
-                                        lower_expression(&expr.borrow().expression, ctx).unwrap(),
-                                    )
-                                })
-                                .collect(),
-                        }
-                        .into(),
-                        to: Type::PathElement,
+                    llr_Expression::Struct {
+                        ty,
+                        values: element
+                            .bindings
+                            .iter()
+                            .map(|(property, expr)| {
+                                (
+                                    property.clone(),
+                                    lower_expression(&expr.borrow().expression, ctx).unwrap(),
+                                )
+                            })
+                            .collect(),
                     }
                 })
                 .collect();
             Some(llr_Expression::Cast {
                 from: llr_Expression::Array {
-                    element_ty: Type::PathElement,
+                    element_ty: Type::Struct {
+                        fields: Default::default(),
+                        name: Some("PathElement".to_owned()),
+                        node: None,
+                    },
                     values: converted_elements,
                     as_model: false,
                 }

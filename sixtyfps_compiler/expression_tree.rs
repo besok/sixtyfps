@@ -1023,7 +1023,6 @@ impl Expression {
             Type::Bool => Expression::BoolLiteral(false),
             Type::Model => Expression::Invalid,
             Type::PathData => Expression::PathData(Path::Elements(vec![])),
-            Type::PathElement => Expression::Invalid,
             Type::Array(element_ty) => {
                 Expression::Array { element_ty: (**element_ty).clone(), values: vec![] }
             }

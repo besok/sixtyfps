@@ -231,7 +231,6 @@ fn to_eval_value<'cx>(
         | Type::Easing
         | Type::Component(_)
         | Type::PathData
-        | Type::PathElement
         | Type::LayoutCache
         | Type::ElementReference => cx.throw_error("Cannot convert to a Sixtyfps property value"),
     }

@@ -831,8 +831,7 @@ fn check_value_type(value: &Value, ty: &Type) -> bool {
         | Type::Native(_)
         | Type::Callback { .. }
         | Type::Function { .. }
-        | Type::ElementReference
-        | Type::PathElement => panic!("not valid property type"),
+        | Type::ElementReference => panic!("not valid property type"),
         Type::Float32 => matches!(value, Value::Number(_)),
         Type::Int32 => matches!(value, Value::Number(_)),
         Type::String => matches!(value, Value::String(_)),
@@ -1147,8 +1146,7 @@ pub fn default_value_for_type(ty: &Type) -> Value {
         | Type::Builtin(_)
         | Type::Component(_)
         | Type::Native(_)
-        | Type::Function { .. }
-        | Type::PathElement => {
+        | Type::Function { .. } => {
             panic!("There can't be such property")
         }
     }

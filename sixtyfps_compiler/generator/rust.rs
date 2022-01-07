@@ -1413,13 +1413,21 @@ fn compile_expression(expr: &Expression, ctx: &EvaluationContext) -> TokenStream
                     let id = struct_name_to_tokens(n);
                     quote!({ let obj = #f; #id { #(#fields),*} })
                 }
-                (Type::Struct { .. }, Type::PathElement) => {
-                    quote!(sixtyfps::re_exports::PathElement::from(#f))
-                }
-                (Type::Array(element_ty), Type::PathData)
-                    if matches!(element_ty.as_ref(), Type::PathElement) =>
+                (Type::Array(..), Type::PathData)
+                    if matches!(
+                        from.as_ref(),
+                        Expression::Array { element_ty: Type::Struct { .. }, .. }
+                    ) =>
                 {
-                    quote!(sixtyfps::re_exports::PathData::Elements(sixtyfps::re_exports::SharedVector::<_>::from_slice(&#f)))
+                    let path_elements = match from.as_ref() {
+                        Expression::Array { element_ty: _, values, as_model: _ } => values
+                            .iter()
+                            .map(|path_elem_expr| compile_expression(path_elem_expr, ctx)),
+                        _ => {
+                            unreachable!()
+                        }
+                    };
+                    quote!(sixtyfps::re_exports::PathData::Elements(sixtyfps::re_exports::SharedVector::<_>::from_slice(&[#((#path_elements).into()),*])))
                 }
                 _ => f,
             }
