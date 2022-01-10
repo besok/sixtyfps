@@ -1438,8 +1438,6 @@ fn compile_expression(expr: &Expression, ctx: &EvaluationContext) -> TokenStream
         }
         Expression::BuiltinFunctionCall { function, arguments } => {
             compile_builtin_function_call(*function, &arguments, ctx)
-            BuiltinFunction::Log => quote!((|a1, a2| (a1 as f64).log(a2 as f64))),
-            BuiltinFunction::Pow => quote!((|a1, a2| (a1 as f64).powf(a2 as f64))),
         }
         Expression::CallBackCall { callback, arguments } => {
             let f = access_member(callback, ctx);
@@ -1792,6 +1790,14 @@ fn compile_builtin_function_call(
         BuiltinFunction::ASin => quote!((#(#a)* as f64).asin().to_degrees()),
         BuiltinFunction::ACos => quote!((#(#a)* as f64).acos().to_degrees()),
         BuiltinFunction::ATan => quote!((#(#a)* as f64).atan().to_degrees()),
+        BuiltinFunction::Log => {
+            let (a1, a2) = (a.next().unwrap(), a.next().unwrap());
+            quote!((#a1 as f64).log(#a2 as f64))
+        }
+        BuiltinFunction::Pow => {
+            let (a1, a2) = (a.next().unwrap(), a.next().unwrap());
+            quote!((#a1 as f64).powf(#a2 as f64))
+        }
         BuiltinFunction::StringToFloat => {
             quote!(#(#a)*.as_str().parse::<f64>().unwrap_or_default())
         }
