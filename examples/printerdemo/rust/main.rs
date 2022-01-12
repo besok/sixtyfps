@@ -71,7 +71,6 @@ fn main() -> ! {
 }
 
 fn printerdemo_main() {
-    sixtyfps_corelib::debug_log!("Starting printer demo");
     let main_window = MainWindow::new();
     main_window.set_ink_levels(sixtyfps::VecModel::from_slice(&[
         InkLevel { color: sixtyfps::Color::from_rgb_u8(0, 255, 255), level: 0.40 },
