@@ -14,13 +14,19 @@ use crate::diagnostics::BuildDiagnostics;
 use crate::expression_tree::{BuiltinFunction, EasingCurve, OperatorClass};
 use crate::langtype::Type;
 use crate::layout::Orientation;
-use crate::llr::{self, EvaluationContext as _, Expression};
+use crate::llr::{
+    self, EvaluationContext as llr_EvaluationContext, Expression, ParentCtx as llr_ParentCtx,
+    TypeResolutionContext as _,
+};
 use crate::object_tree::Document;
 use itertools::Either;
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
+
+type EvaluationContext<'a> = llr_EvaluationContext<'a, TokenStream>;
+type ParentCtx<'a> = llr_ParentCtx<'a, TokenStream>;
 
 fn ident(ident: &str) -> proc_macro2::Ident {
     if ident.contains('-') {
@@ -201,7 +207,7 @@ fn generate_public_component(llr: &llr::PublicComponent) -> Option<TokenStream> 
         public_component: llr,
         current_sub_component: Some(&llr.item_tree.root),
         current_global: None,
-        root_access: quote!(_self),
+        generator_state: quote!(_self),
         parent: None,
         argument_types: &[],
     };
@@ -463,7 +469,12 @@ fn generate_sub_component(
 ) -> Option<TokenStream> {
     let inner_component_id = inner_component_id(component);
 
-    let ctx = EvaluationContext::new_sub_component(root, component, parent_ctx);
+    let ctx = EvaluationContext::new_sub_component(
+        root,
+        component,
+        quote!(_self.root.get().unwrap().upgrade().unwrap()),
+        parent_ctx.clone(),
+    );
     let mut extra_components = component
         .popup_windows
         .iter()
@@ -577,7 +588,7 @@ fn generate_sub_component(
         let field_name = ident(&sub.name);
         let sub_component_id = self::inner_component_id(&sub.ty);
         let tree_index: u32 = sub.index_in_tree as _;
-        let root_ref_tokens = &ctx.root_access;
+        let root_ref_tokens = &ctx.generator_state;
 
         init.push(quote!(#sub_component_id::init(
             VRcMapped::map(self_rc.clone(), |x| Self::FIELD_OFFSETS.#field_name.apply_pin(x)),
@@ -730,7 +741,7 @@ fn generate_global(global: &llr::GlobalComponent, root: &llr::PublicComponent) -
         public_component: root,
         current_sub_component: None,
         current_global: Some(global),
-        root_access: quote!(compilation_error("can't access root from global")),
+        generator_state: quote!(compilation_error("can't access root from global")),
         parent: None,
         argument_types: &[],
     };
@@ -810,7 +821,7 @@ fn generate_item_tree(
     parent_ctx: Option<ParentCtx>,
     extra_fields: TokenStream,
 ) -> Option<TokenStream> {
-    let sub_comp = generate_sub_component(&sub_tree.root, root, parent_ctx, extra_fields)?;
+    let sub_comp = generate_sub_component(&sub_tree.root, root, parent_ctx.clone(), extra_fields)?;
     let inner_component_id = self::inner_component_id(&sub_tree.root);
     let parent_component_type = parent_ctx.iter().map(|parent| {
         let parent_component_id = self::inner_component_id(&parent.ctx.current_sub_component.unwrap());
@@ -968,13 +979,14 @@ fn generate_repeated_component(
     root: &llr::PublicComponent,
     parent_ctx: ParentCtx,
 ) -> Option<TokenStream> {
-    let component = generate_item_tree(&repeated.sub_tree, root, Some(parent_ctx), quote!())?;
+    let component =
+        generate_item_tree(&repeated.sub_tree, root, Some(parent_ctx.clone()), quote!())?;
 
     let ctx = EvaluationContext {
         public_component: root,
         current_sub_component: Some(&repeated.sub_tree.root),
         current_global: None,
-        root_access: quote!(_self),
+        generator_state: quote!(_self),
         parent: Some(parent_ctx),
         argument_types: &[],
     };
@@ -1135,7 +1147,7 @@ fn access_member(reference: &llr::PropertyReference, ctx: &EvaluationContext) ->
             let mut path = quote!(_self);
             for _ in 0..level.get() {
                 path = quote!(#path.parent.upgrade().unwrap().as_pin_ref());
-                ctx = ctx.parent.unwrap().ctx;
+                ctx = ctx.parent.as_ref().unwrap().ctx;
             }
 
             match &**parent_reference {
@@ -1158,7 +1170,7 @@ fn access_member(reference: &llr::PropertyReference, ctx: &EvaluationContext) ->
             }
         }
         llr::PropertyReference::Global { global_index, property_index } => {
-            let root_access = &ctx.root_access;
+            let root_access = &ctx.generator_state;
             let global = &ctx.public_component.globals[*global_index];
             let global_id = format_ident!("global_{}", ident(&global.name));
             let global_name = global_inner_name(global);
@@ -1186,7 +1198,7 @@ fn follow_sub_component_path<'a>(
 }
 
 fn access_window_field(ctx: &EvaluationContext) -> TokenStream {
-    let root = &ctx.root_access;
+    let root = &ctx.generator_state;
     quote!(#root.window.get().unwrap().window_handle())
 }
 
@@ -1201,7 +1213,7 @@ fn access_item_rc(pr: &llr::PropertyReference, ctx: &EvaluationContext) -> Token
             for _ in 0..level.get() {
                 component_access_tokens =
                     quote!(#component_access_tokens.parent.upgrade().unwrap().as_pin_ref());
-                ctx = ctx.parent.unwrap().ctx;
+                ctx = ctx.parent.as_ref().unwrap().ctx;
             }
             parent_reference
         }
@@ -1230,102 +1242,6 @@ fn access_item_rc(pr: &llr::PropertyReference, ctx: &EvaluationContext) -> Token
             quote!(&ItemRc::new(#component_rc_tokens, #item_index_tokens))
         }
         _ => unreachable!(),
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ParentCtx<'a> {
-    ctx: &'a EvaluationContext<'a>,
-    // Index of the repeater within the ctx.current_sub_component
-    repeater_index: Option<usize>,
-}
-
-impl<'a> ParentCtx<'a> {
-    fn new(ctx: &'a EvaluationContext<'a>, repeater_index: Option<usize>) -> Self {
-        Self { ctx, repeater_index }
-    }
-}
-
-#[derive(Clone)]
-struct EvaluationContext<'a> {
-    public_component: &'a llr::PublicComponent,
-    current_sub_component: Option<&'a llr::SubComponent>,
-    current_global: Option<&'a llr::GlobalComponent>,
-    /// path to access the public_component (so one can access the globals).
-    /// e.g: `_self` in case we already are the root
-    root_access: TokenStream,
-    /// The repeater parent
-    parent: Option<ParentCtx<'a>>,
-
-    /// The callback argument types
-    argument_types: &'a [Type],
-}
-
-impl<'a> EvaluationContext<'a> {
-    fn new_sub_component(
-        public_component: &'a llr::PublicComponent,
-        sub_component: &'a llr::SubComponent,
-        parent: Option<ParentCtx<'a>>,
-    ) -> Self {
-        /*let root_access = if let Some(parent) = &parent {
-            let p = &parent.ctx.root_access;
-            quote!(parent.)
-        } else {
-            quote!(_self)
-        };*/
-        Self {
-            public_component,
-            current_sub_component: Some(sub_component),
-            current_global: None,
-            root_access: quote!(_self.root.get().unwrap().upgrade().unwrap()),
-            parent,
-            argument_types: &[],
-        }
-    }
-}
-
-impl<'a> llr::EvaluationContext for EvaluationContext<'a> {
-    fn property_ty(&self, prop: &llr::PropertyReference) -> &Type {
-        match prop {
-            llr::PropertyReference::Local { sub_component_path, property_index } => {
-                if let Some(mut sub_component) = self.current_sub_component {
-                    for i in sub_component_path {
-                        sub_component = &sub_component.sub_components[*i].ty;
-                    }
-                    &sub_component.properties[*property_index].ty
-                } else if let Some(current_global) = self.current_global {
-                    &current_global.properties[*property_index].ty
-                } else {
-                    unreachable!()
-                }
-            }
-            llr::PropertyReference::InNativeItem { sub_component_path, item_index, prop_name } => {
-                if prop_name == "elements" {
-                    // The `Path::elements` property is not in the NativeClasss
-                    return &Type::PathData;
-                }
-
-                let mut sub_component = self.current_sub_component.unwrap();
-                for i in sub_component_path {
-                    sub_component = &sub_component.sub_components[*i].ty;
-                }
-                sub_component.items[*item_index].ty.lookup_property(prop_name).unwrap()
-            }
-            llr::PropertyReference::InParent { level, parent_reference } => {
-                let mut ctx = self;
-                for _ in 0..level.get() {
-                    ctx = ctx.parent.unwrap().ctx;
-                }
-                ctx.property_ty(parent_reference)
-            }
-            llr::PropertyReference::Global { global_index, property_index } => {
-                &self.public_component.globals[*global_index].properties[*property_index].ty
-            }
-        }
-    }
-
-    fn arg_type(&self, index: usize) -> &Type {
-        &self.argument_types[index]
     }
 }
 
