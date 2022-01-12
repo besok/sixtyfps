@@ -237,11 +237,13 @@ mod cpp_ast {
 }
 
 use crate::diagnostics::{BuildDiagnostics, Spanned};
-use crate::expression_tree::{
-    BindingExpression, BuiltinFunction, EasingCurve, Expression, NamedReference,
-};
+use crate::expression_tree::EasingCurve;
 use crate::langtype::Type;
 use crate::layout::{Layout, LayoutGeometry, LayoutRect, Orientation};
+use crate::llr::{
+    self, BindingExpression, EvaluationContext as llr_EvaluationContext, Expression,
+    ParentCtx as llr_ParentCtx, TypeResolutionContext as _,
+};
 use crate::object_tree::{
     Component, Document, ElementRc, PropertyDeclaration, RepeatedElementInfo,
 };
@@ -250,6 +252,9 @@ use itertools::Itertools;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+
+type EvaluationContext<'a> = llr_EvaluationContext<'a, String>;
+type ParentCtx<'a> = llr_ParentCtx<'a, String>;
 
 fn ident(ident: &str) -> Cow<'_, str> {
     if ident.contains('-') {
@@ -343,6 +348,7 @@ fn remove_parentheses_test() {
     assert_eq!(remove_parentheses("()())("), "()())(");
 }
 
+/* FIXME: should not be needed, should use compile_expression instead and the fact that the llr generated Expression::Struct
 fn new_struct_with_bindings(
     type_name: &str,
     bindings: &crate::object_tree::BindingsMap,
@@ -374,6 +380,7 @@ fn property_animation_code(component: &Rc<Component>, animation: &ElementRc) -> 
         component,
     )
 }
+*/
 
 fn property_set_value_code(
     component: &Rc<Component>,
@@ -381,6 +388,7 @@ fn property_set_value_code(
     property_name: &str,
     value_expr: &str,
 ) -> String {
+    /* FIXME
     if let Some(binding) = element.borrow().bindings.get(property_name) {
         if let Some(crate::object_tree::PropertyAnimation::Static(animation)) =
             binding.borrow().animation.as_ref()
@@ -393,6 +401,7 @@ fn property_set_value_code(
             );
         }
     }
+    */
     format!("set({})", value_expr)
 }
 
@@ -401,15 +410,13 @@ fn handle_property_binding(
     prop_name: &str,
     binding_expression: &BindingExpression,
     init: &mut Vec<String>,
+    ctx: &EvaluationContext,
 ) {
     let item = elem.borrow();
     let component = item.enclosing_component.upgrade().unwrap();
     let prop_access = access_member(elem, prop_name, &component, "this");
     let prop_type = item.lookup_property(prop_name).property_type;
     if let Type::Callback { args, .. } = &prop_type {
-        if matches!(binding_expression.expression, Expression::Invalid) {
-            return;
-        }
         let mut params = args.iter().enumerate().map(|(i, ty)| {
             format!("[[maybe_unused]] {} arg_{}", ty.cpp_type().unwrap_or_default(), i)
         });
@@ -422,9 +429,10 @@ fn handle_property_binding(
                     }});",
             prop_access = prop_access,
             params = params.join(", "),
-            code = compile_expression_wrap_return(binding_expression, &component)
+            code = compile_expression_wrap_return(&binding_expression.expression, &ctx)
         ));
     } else {
+        /* FIXME: move to generate_sub_component
         for nr in &binding_expression.two_way_bindings {
             init.push(format!(
                 "sixtyfps::private_api::Property<{ty}>::link_two_way(&{p1}, &{p2});",
@@ -433,16 +441,13 @@ fn handle_property_binding(
                 p2 = access_named_reference(nr, &component, "this")
             ));
         }
-        if matches!(binding_expression.expression, Expression::Invalid) {
-            return;
-        }
+        */
 
         let component = &item.enclosing_component.upgrade().unwrap();
 
-        let init_expr = compile_expression_wrap_return(binding_expression, component);
+        let init_expr = compile_expression_wrap_return(&binding_expression.expression, ctx);
 
-        let is_constant = binding_expression.analysis.as_ref().map_or(false, |a| a.is_const);
-        init.push(if is_constant {
+        init.push(if binding_expression.is_constant {
             format!("{}.set({});", prop_access, init_expr)
         } else {
             let binding_code = format!(
@@ -457,12 +462,14 @@ fn handle_property_binding(
             if is_state_info {
                 format!("sixtyfps::private_api::set_state_binding({}, {});", prop_access, binding_code)
             } else {
+                todo!("animation setup")
+                /*
                 match &binding_expression.animation {
-                    Some(crate::object_tree::PropertyAnimation::Static(anim)) => {
+                    Some(crate::llr::Animation::Static(anim)) => {
                         let anim = property_animation_code(component, anim);
                         format!("{}.set_animated_binding({}, {});", prop_access, binding_code, anim)
                     }
-                    Some(crate::object_tree::PropertyAnimation::Transition {
+                    Some(crate::llr::Animation::Transition {
                         state_ref,
                         animations,
                     }) => {
@@ -495,6 +502,7 @@ fn handle_property_binding(
                     }
                     None => format!("{}.set_binding({});", prop_access, binding_code),
                 }
+                */
             }
         });
     }
@@ -526,6 +534,8 @@ fn handle_repeater(
     children_visitor_cases: &mut Vec<String>,
     diag: &mut BuildDiagnostics,
 ) {
+    todo!("handle repeater")
+    /*
     let parent_element = base_component.parent_element.upgrade().unwrap();
     let repeater_id = format!("repeater_{}", ident(&parent_element.borrow().id));
 
@@ -587,6 +597,7 @@ fn handle_repeater(
             ..Default::default()
         }),
     ));
+    */
 }
 
 /// Returns the text of the C++ code produced by the given root component
@@ -643,51 +654,38 @@ pub fn generate(doc: &Document, diag: &mut BuildDiagnostics) -> Option<impl std:
             generate_struct(&mut file, name, fields, diag);
         }
     }
+    let llr = crate::llr::lower_to_item_tree::lower_to_item_tree(&doc.root_component);
 
-    let mut components_to_add_as_friends = vec![];
-    for sub_comp in doc.root_component.used_types.borrow().sub_components.iter() {
-        generate_component(
-            &mut file,
-            sub_comp,
-            &doc.root_component,
-            diag,
-            &mut components_to_add_as_friends,
-        );
+    let mut components_to_add_as_friends: Vec<String> = vec![];
+    for sub_comp in llr.sub_components.iter() {
+        todo!("generate sub component");
+        /* generate_component(&mut file, sub_comp, &llr, diag, &mut components_to_add_as_friends); */
     }
 
-    for glob in doc
-        .root_component
-        .used_types
-        .borrow()
-        .globals
-        .iter()
-        .filter(|glob| glob.requires_code_generation())
-    {
-        generate_component(
-            &mut file,
-            glob,
-            &doc.root_component,
-            diag,
-            &mut components_to_add_as_friends,
-        );
+    for glob in llr.globals.iter().filter(|glob| !glob.is_builtin) {
+        todo!("generate global");
+        // generate_component(&mut file, glob, &llr, diag, &mut components_to_add_as_friends);
 
-        if glob.visible_in_public_api() {
-            file.definitions.extend(glob.global_aliases().into_iter().map(|name| {
+        if glob.exported {
+            file.definitions.extend(glob.aliases.into_iter().map(|name| {
                 Declaration::TypeAlias(TypeAlias {
-                    old_name: ident(&glob.root_element.borrow().id).into_owned(),
+                    old_name: ident(&glob.name).into_owned(),
                     new_name: name,
                 })
             }))
         }
     }
 
+    todo!("generate_public_component");
+    /*
     generate_component(
         &mut file,
         &doc.root_component,
-        &doc.root_component,
+        &llr,
         diag,
         &mut components_to_add_as_friends,
     );
+    */
 
     file.definitions.push(Declaration::Var(Var{
         ty: format!(
@@ -768,10 +766,11 @@ fn generate_struct(
 /// Generate the component in `file`.
 ///
 /// `sub_components`, if Some, will be filled with all the sub component which needs to be added as friends
+/*
 fn generate_component(
     file: &mut File,
-    component: &Rc<Component>,
-    root_component: &Rc<Component>,
+    component: &llr::SubComponent,
+    root_component: &llr::PublicComponent,
     diag: &mut BuildDiagnostics,
     sub_components: &mut Vec<String>,
 ) {
@@ -1600,6 +1599,7 @@ fn generate_component(
     file.definitions.extend(component_struct.extract_definitions().collect::<Vec<_>>());
     file.declarations.push(Declaration::Struct(component_struct));
 }
+*/
 
 fn generate_component_vtable(
     component_struct: &mut Struct,
@@ -1883,6 +1883,7 @@ fn access_member(
 }
 
 /// Call access_member  for a NamedReference
+/*
 fn access_named_reference(
     nr: &NamedReference,
     component: &Rc<Component>,
@@ -1890,8 +1891,10 @@ fn access_named_reference(
 ) -> String {
     access_member(&nr.element(), nr.name(), component, component_cpp)
 }
+*/
 
 /// Returns the code that can access the component of the given element
+/*
 fn access_element_component<'a>(
     element: &ElementRc,
     current_component: &Rc<Component>,
@@ -1918,11 +1921,13 @@ fn access_element_component<'a>(
         .into()
     }
 }
+*/
 
 // Returns an expression that will compute the absolute item index in the item tree for a
 // given element. For elements of a child component or the root component, the item_index
 // is already absolute within the corresponding item tree. For sub-components we return an
 // expression that computes the value at run-time.
+/*
 fn absolute_element_item_index_expression(element: &ElementRc) -> String {
     let element = element.borrow();
     let local_index = element.item_index.get().unwrap();
@@ -1939,18 +1944,15 @@ fn absolute_element_item_index_expression(element: &ElementRc) -> String {
         local_index.to_string()
     }
 }
+*/
 
-fn compile_expression(
-    expr: &crate::expression_tree::Expression,
-    component: &Rc<Component>,
-) -> String {
+fn compile_expression(expr: &llr::Expression, ctx: &EvaluationContext) -> String {
     match expr {
         Expression::StringLiteral(s) => {
             format!(r#"sixtyfps::SharedString(u8"{}")"#, escape_string(s.as_str()))
         }
-        Expression::NumberLiteral(n, unit) => {
-            let num = unit.normalize(*n);
-            if num > 1_000_000_000. {
+        Expression::NumberLiteral(num) => {
+            if *num > 1_000_000_000. {
                 // If the numbers are too big, decimal notation will give too many digit
                 format!("{:+e}", num)
             } else {
@@ -1959,14 +1961,20 @@ fn compile_expression(
         }
         Expression::BoolLiteral(b) => b.to_string(),
         Expression::PropertyReference(nr) => {
+            /*
             let access =
                 access_named_reference(nr, component, "self");
             format!(r#"{}.get()"#, access)
+            */
+            todo!("generate property reference")
         }
+        /* FIXME: fold into PropertyReference
         Expression::CallbackReference(nr) => format!(
             "{}.call",
             access_named_reference(nr, component, "self")
         ),
+        */
+        /* FIXME: Expression::BuiltinFunctionCall
         Expression::BuiltinFunctionReference(funcref, _) => match funcref {
             BuiltinFunction::GetWindowScaleFactor => {
                 "self->m_window.window_handle().scale_factor".into()
@@ -2038,9 +2046,8 @@ fn compile_expression(
                 panic!("internal error: RegisterCustomFontByMemory can only be evaluated from within a FunctionCall expression")
             }
         },
-        Expression::ElementReference(_) => todo!("Element references are only supported in the context of built-in function calls at the moment"),
-        Expression::MemberFunction { .. } => panic!("member function expressions must not appear in the code generator anymore"),
-        Expression::BuiltinMacroReference { .. } => panic!("macro expressions must not appear in the code generator anymore"),
+        */
+        /* FIXME: handle in property reference
         Expression::RepeaterIndexReference { element } => {
             let access = access_member(
                 &element.upgrade().unwrap().borrow().base_type.as_component().root_element,
@@ -2059,27 +2066,28 @@ fn compile_expression(
             );
             format!(r#"{}model_data.get()"#, access)
         }
+        */
         Expression::FunctionParameterReference { index, .. } => format!("arg_{}", index),
         Expression::StoreLocalVariable { name, value } => {
-            format!("auto {} = {};", ident(name), compile_expression(value, component))
+            format!("auto {} = {};", ident(name), compile_expression(value, ctx))
         }
         Expression::ReadLocalVariable { name, .. } => ident(name).into_owned(),
-        Expression::StructFieldAccess { base, name } => match base.ty() {
+        Expression::StructFieldAccess { base, name } => match base.ty(ctx) {
             Type::Struct { fields, name : None, .. } => {
                 let index = fields
                     .keys()
                     .position(|k| k == name)
                     .expect("Expression::ObjectAccess: Cannot find a key in an object");
-                format!("std::get<{}>({})", index, compile_expression(base, component))
+                format!("std::get<{}>({})", index, compile_expression(base, ctx))
             }
             Type::Struct{..} => {
-                format!("{}.{}", compile_expression(base, component), ident(name))
+                format!("{}.{}", compile_expression(base, ctx), ident(name))
             }
             _ => panic!("Expression::ObjectAccess's base expression is not an Object type"),
         },
         Expression::Cast { from, to } => {
-            let f = compile_expression(&*from, component);
-            match (from.ty(), to) {
+            let f = compile_expression(&*from, ctx);
+            match (from.ty(ctx), to) {
                 (Type::Float32, Type::String) | (Type::Int32, Type::String) => {
                     format!("sixtyfps::SharedString::from_number({})", f)
                 }
@@ -2114,16 +2122,17 @@ fn compile_expression(
             let len = sub.len();
             let mut x = sub.iter().enumerate().map(|(i, e)| {
                 if i == len - 1 {
-                    return_compile_expression(e, component, None) + ";"
+                    return_compile_expression(e, ctx, None) + ";"
                 }
                 else {
-                    compile_expression(e, component)
+                    compile_expression(e, ctx)
                 }
 
             });
 
             format!("[&]{{ {} }}()", x.join(";"))
         }
+        /* FIXME:
         Expression::FunctionCall { function, arguments, source_location: _  } => match &**function {
             Expression::BuiltinFunctionReference(BuiltinFunction::SetFocusItem, _) => {
                 if arguments.len() != 1 {
@@ -2214,16 +2223,19 @@ fn compile_expression(
                 format!("{}({})", compile_expression(function, component), args.join(", "))
             }
         },
+        */
+        /* FIXME: should not be needed, llr lowers
         Expression::SelfAssignment { lhs, rhs, op } => {
-            let rhs = compile_expression(&*rhs, component);
-            compile_assignment(lhs, *op, rhs, component)
+            let rhs = compile_expression(&*rhs, ctx);
+            compile_assignment(lhs, *op, rhs, ctx)
         }
+        */
         Expression::BinaryExpression { lhs, rhs, op } => {
             let mut buffer = [0; 3];
             format!(
                 "({lhs} {op} {rhs})",
-                lhs = compile_expression(&*lhs, component),
-                rhs = compile_expression(&*rhs, component),
+                lhs = compile_expression(&*lhs, ctx),
+                rhs = compile_expression(&*rhs, ctx),
                 op = match op {
                     '=' => "==",
                     '!' => "!=",
@@ -2237,7 +2249,7 @@ fn compile_expression(
             )
         }
         Expression::UnaryOp { sub, op } => {
-            format!("({op} {sub})", sub = compile_expression(&*sub, component), op = op,)
+            format!("({op} {sub})", sub = compile_expression(&*sub, ctx), op = op,)
         }
         Expression::ImageReference { resource_ref, .. }  => {
             match resource_ref {
@@ -2254,11 +2266,11 @@ fn compile_expression(
             }
         }
         Expression::Condition { condition, true_expr, false_expr } => {
-            let ty = expr.ty();
-            let cond_code = compile_expression(condition, component);
+            let ty = expr.ty(ctx);
+            let cond_code = compile_expression(condition, ctx);
             let cond_code = remove_parentheses(&cond_code);
-            let true_code = return_compile_expression(true_expr, component, Some(&ty));
-            let false_code = return_compile_expression(false_expr, component, Some(&ty));
+            let true_code = return_compile_expression(true_expr, ctx, Some(&ty));
+            let false_code = false_expr.as_ref().map(|false_expr| return_compile_expression(false_expr, ctx, Some(&ty))).unwrap_or_default();
             format!(
                 r#"[&]() -> {} {{ if ({}) {{ {}; }} else {{ {}; }}}}()"#,
                 ty.cpp_type().unwrap_or_else(|| "void".to_string()),
@@ -2268,7 +2280,7 @@ fn compile_expression(
             )
 
         }
-        Expression::Array { element_ty, values } => {
+        Expression::Array { element_ty, values, as_model } => {
             let ty = element_ty.cpp_type().unwrap_or_else(|| "FIXME: report error".to_owned());
             format!(
                 "std::make_shared<sixtyfps::private_api::ArrayModel<{count},{ty}>>({val})",
@@ -2278,7 +2290,7 @@ fn compile_expression(
                     .iter()
                     .map(|e| format!(
                         "{ty} ( {expr} )",
-                        expr = compile_expression(e, component),
+                        expr = compile_expression(e, ctx),
                         ty = ty,
                     ))
                     .join(", ")
@@ -2289,7 +2301,7 @@ fn compile_expression(
                 let mut elem = fields.keys().map(|k| {
                     values
                         .get(k)
-                        .map(|e| compile_expression(e, component))
+                        .map(|e| compile_expression(e, ctx))
                         .unwrap_or_else(|| "(Error: missing member in object)".to_owned())
                 });
                 format!("{}{{{}}}", ty.cpp_type().unwrap(), elem.join(", "))
@@ -2297,17 +2309,17 @@ fn compile_expression(
                 panic!("Expression::Object is not a Type::Object")
             }
         }
-        Expression::PathData(data)  => compile_path(data, component),
+        // FIXME: should not be needed, llr lowers to Experssion::Struct Expression::PathData(data)  => compile_path(data, ctx),
         Expression::EasingCurve(EasingCurve::Linear) => "sixtyfps::cbindgen_private::EasingCurve()".into(),
         Expression::EasingCurve(EasingCurve::CubicBezier(a, b, c, d)) => format!(
             "sixtyfps::cbindgen_private::EasingCurve(sixtyfps::cbindgen_private::EasingCurve::Tag::CubicBezier, {}, {}, {}, {})",
             a, b, c, d
         ),
         Expression::LinearGradient{angle, stops} => {
-            let angle = compile_expression(angle, component);
+            let angle = compile_expression(angle, ctx);
             let mut stops_it = stops.iter().map(|(color, stop)| {
-                let color = compile_expression(color, component);
-                let position = compile_expression(stop, component);
+                let color = compile_expression(color, ctx);
+                let position = compile_expression(stop, ctx);
                 format!("sixtyfps::private_api::GradientStop{{ {}, {}, }}", color, position)
             });
             format!(
@@ -2320,18 +2332,22 @@ fn compile_expression(
         }
         Expression::ReturnStatement(Some(expr)) => format!(
             "throw sixtyfps::private_api::ReturnWrapper<{}>({})",
-            expr.ty().cpp_type().unwrap_or_default(),
-            compile_expression(expr, component)
+            expr.ty(ctx).cpp_type().unwrap_or_default(),
+            compile_expression(expr, ctx)
         ),
         Expression::ReturnStatement(None) => "throw sixtyfps::private_api::ReturnWrapper<void>()".to_owned(),
         Expression::LayoutCacheAccess { layout_cache_prop, index, repeater_index } => {
+            todo!("layout cache access");
+            /*
             let cache = access_named_reference(layout_cache_prop, component, "self");
             if let Some(ri) = repeater_index {
                 format!("sixtyfps::private_api::layout_cache_access({}.get(), {}, {})", cache, index, compile_expression(ri, component))
             } else {
                 format!("{}.get()[{}]", cache, index)
             }
+            */
         }
+        /* FIXME: layouts
         Expression::ComputeLayoutInfo(Layout::GridLayout(layout), o) => {
             let (padding, spacing) = generate_layout_padding_and_spacing(&layout.geometry, *o, component);
             let cells = grid_layout_cell_data(layout, *o, component);
@@ -2430,11 +2446,12 @@ fn compile_expression(
             )
 
         }
-        Expression::Uncompiled(_) => panic!(),
-        Expression::Invalid => "\n#error invalid expression\n".to_string(),
+        */
+        _ => todo!("missing llr expressions"),
     }
 }
 
+/*
 fn compile_assignment(
     lhs: &Expression,
     op: char,
@@ -2517,7 +2534,9 @@ fn compile_assignment(
         _ => panic!("typechecking should make sure this was a PropertyReference"),
     }
 }
+*/
 
+/*
 fn grid_layout_cell_data(
     layout: &crate::layout::GridLayout,
     orientation: Orientation,
@@ -2537,7 +2556,9 @@ fn grid_layout_cell_data(
         })
         .join(", ")
 }
+*/
 
+/*
 /// Returns `(cells, alignment)`.
 /// The repeated_indices initialize the repeated_indices (var, init_code)
 fn box_layout_data(
@@ -2684,12 +2705,15 @@ fn get_layout_info(
     }
     layout_info
 }
+*/
 
 fn layout_info_function_body(
     component: &Rc<Component>,
     self_accessor: String,
     custom_window_accessor: Option<&'_ str>,
 ) -> Vec<String> {
+    vec!["assert(!\"todo\")".to_owned()]
+    /*
     vec![
         self_accessor,
         format!(
@@ -2713,8 +2737,10 @@ fn layout_info_function_body(
             )
         ),
     ]
+    */
 }
 
+/*
 fn compile_path(path: &crate::expression_tree::Path, component: &Rc<Component>) -> String {
     match path {
         crate::expression_tree::Path::Elements(elements) => {
@@ -2772,13 +2798,16 @@ fn compile_path(path: &crate::expression_tree::Path, component: &Rc<Component>) 
         }
     }
 }
+*/
 
 /// Like compile_expression, but wrap inside a try{}catch{} block to intercept the return
-fn compile_expression_wrap_return(expr: &Expression, component: &Rc<Component>) -> String {
+fn compile_expression_wrap_return(expr: &Expression, ctx: &EvaluationContext) -> String {
+    todo!("return statement")
+    /*
     /// Return a type if there is any `return` in sub expressions
-    fn return_type(expr: &Expression) -> Option<Type> {
+    fn return_type(expr: &Expression, ctx: &EvaluationContext) -> Option<Type> {
         if let Expression::ReturnStatement(val) = expr {
-            return Some(val.as_ref().map_or(Type::Void, |v| v.ty()));
+            return Some(val.as_ref().map_or(Type::Void, |v| v.ty(ctx)));
         }
         let mut ret = None;
         expr.visit(|e| {
@@ -2789,38 +2818,39 @@ fn compile_expression_wrap_return(expr: &Expression, component: &Rc<Component>) 
         ret
     }
 
-    if let Some(ty) = return_type(expr) {
+    if let Some(ty) = return_type(expr, ctx) {
         if ty == Type::Void || ty == Type::Invalid {
             format!(
                 "[&]{{ try {{ {}; }} catch(const sixtyfps::private_api::ReturnWrapper<void> &w) {{ }} }}()",
-                compile_expression(expr, component)
+                compile_expression(expr, ctx)
             )
         } else {
             let cpp_ty = ty.cpp_type().unwrap_or_default();
             format!(
                 "[&]() -> {} {{ try {{ {}; }} catch(const sixtyfps::private_api::ReturnWrapper<{}> &w) {{ return w.value; }} }}()",
                 cpp_ty,
-                return_compile_expression(expr, component, Some(&ty)),
+                return_compile_expression(expr, ctx, Some(&ty)),
                 cpp_ty
             )
         }
     } else {
-        compile_expression(expr, component)
+        compile_expression(expr, ctx)
     }
+    */
 }
 
 /// Like compile expression, but prepended with `return` if not void.
 /// ret_type is the expecting type that should be returned with that return statement
 fn return_compile_expression(
     expr: &Expression,
-    component: &Rc<Component>,
+    ctx: &EvaluationContext,
     ret_type: Option<&Type>,
 ) -> String {
-    let e = compile_expression(expr, component);
+    let e = compile_expression(expr, ctx);
     if ret_type == Some(&Type::Void) || ret_type == Some(&Type::Invalid) {
         e
     } else {
-        let ty = expr.ty();
+        let ty = expr.ty(ctx);
         if ty == Type::Invalid && ret_type.is_some() {
             // e is unreachable so it probably throws. But we still need to return something to avoid a warning
             format!("{}; return {{}}", e)
