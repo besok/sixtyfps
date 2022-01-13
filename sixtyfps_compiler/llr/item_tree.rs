@@ -167,6 +167,44 @@ impl TreeNode {
             }
         }
     }
+
+    pub fn sub_component<'a>(&self, root_sub_component: &'a SubComponent) -> &'a SubComponent {
+        let mut current_component = root_sub_component;
+        for sub_component_index in &self.sub_component_path {
+            current_component = &(current_component
+                .sub_components
+                .get(*sub_component_index)
+                .expect("Illegal sub component index in TreeNode")
+                .ty);
+        }
+        current_component
+    }
+
+    pub fn item<'a>(&self, root_sub_component: &'a SubComponent) -> Option<&'a Item> {
+        if self.repeated {
+            None
+        } else {
+            let sub_component = self.sub_component(root_sub_component);
+            Some(sub_component.items.get(self.item_index).expect("Illegal item index in TreeNode"))
+        }
+    }
+
+    pub fn repeated_element<'a>(
+        &self,
+        root_sub_component: &'a SubComponent,
+    ) -> Option<&'a RepeatedElement> {
+        if self.repeated {
+            None
+        } else {
+            let sub_component = self.sub_component(root_sub_component);
+            Some(
+                sub_component
+                    .repeated
+                    .get(self.item_index)
+                    .expect("Illegal repeater index in TreeNode"),
+            )
+        }
+    }
 }
 
 #[derive(Debug)]
